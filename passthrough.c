@@ -940,7 +940,6 @@ int wmain(int argc, wchar_t** argv)
         return ERROR_DELAY_LOAD_FAILED;
 
     start_web_server();
-    //Sleep(2000);
 
     return FspServiceRun(L"" PROGNAME, SvcStart, SvcStop, 0);
 }
