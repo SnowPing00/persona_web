@@ -23,7 +23,6 @@
  */
 extern "C" int start_filesystem(int argc, wchar_t* argv[]);
 
-
 /**
  * @brief The main function for the web server thread.
  *
@@ -344,18 +343,12 @@ extern "C" int start_web_server() {
 
     /**
  * @brief Handles GET requests to stream large file content (e.g., video, audio).
- *
- * This endpoint is optimized for large files. Instead of reading the whole file into
- * memory, it uses a content provider to send the file in smaller chunks. This is
- * essential for features like video seeking (HTTP Range requests) and for handling
- * files that are too large to fit in RAM.
  */
     server.Get("/api/streamfile", [](const httplib::Request& req, httplib::Response& res) {
         // Set a CORS header to allow requests from any web origin.
         res.set_header("Access-Control-Allow-Origin", "*");
 
         // --- 1. Validate request and path ---
-        // Ensure the required 'filename' query parameter was provided.
         if (!req.has_param("filename")) {
             res.status = 400; // Bad Request
             res.set_content("Filename parameter is missing.", "text/plain");
@@ -365,7 +358,6 @@ extern "C" int start_web_server() {
         std::string utf8_filename = req.get_param_value("filename");
         std::wstring wide_filename = utf8_to_wstring(utf8_filename);
 
-        // Perform the same security check as /api/readfile to prevent directory traversal.
         std::wstring safe_full_path;
         if (!is_safe_path(wide_filename, safe_full_path)) {
             res.status = 403; // Forbidden
@@ -374,10 +366,8 @@ extern "C" int start_web_server() {
         }
 
         // --- 2. Open the file for streaming ---
-        // Use a shared_ptr to manage the file stream's lifetime within the lambda captures.
         auto file_stream = std::make_shared<std::ifstream>(safe_full_path, std::ios::binary);
 
-        // If the file cannot be opened, return a 404 Not Found error.
         if (!file_stream->is_open()) {
             res.status = 404;
             res.set_content("File not found.", "text/plain");
@@ -385,37 +375,30 @@ extern "C" int start_web_server() {
         }
 
         // --- 3. Get file size ---
-        // Seek to the end of the file to determine its total size.
         file_stream->seekg(0, std::ios::end);
         auto file_size = file_stream->tellg();
-        // Seek back to the beginning to prepare for reading.
         file_stream->seekg(0, std::ios::beg);
 
         // --- 4. Set up the content provider for streaming ---
-        // This tells httplib how to fetch chunks of the file on demand.
         res.set_content_provider(
-            file_size,      // 1. The total size of the content.
-            "video/mp4",    // 2. The MIME type. Note: This should be determined dynamically.
+            file_size,
+            // MODIFIED: Determine MIME type dynamically based on the filename.
+            get_mime_type(utf8_filename).c_str(),
 
-            // 3. This lambda function is the core of the streaming.
-            //    httplib will call it whenever it needs another chunk of data.
+            // This lambda function is the core of the streaming.
             [file_stream](size_t offset, size_t length, httplib::DataSink& sink) {
-                // Move the read position in the file to the requested offset.
                 file_stream->seekg(offset);
 
-                // Create a buffer and read the requested 'length' of bytes from the file.
                 std::vector<char> buffer(length);
                 file_stream->read(buffer.data(), length);
 
-                // Send the actual number of bytes read (gcount) to the client.
                 sink.write(buffer.data(), file_stream->gcount());
 
-                return true; // Return true to continue streaming.
+                return true;
             },
 
-            // 4. This lambda is called after the entire file has been sent.
+            // This lambda is called after the entire file has been sent.
             [file_stream](bool success) {
-                // Clean up by closing the file stream.
                 file_stream->close();
             }
         );
@@ -545,121 +528,201 @@ extern "C" int start_web_server() {
         }
         });
 
+    /**
+ * @brief Handles POST requests to delete a file from the virtual drive.
+ */
     server.Post("/api/deletefile", [](const httplib::Request& req, httplib::Response& res) {
-        res.set_header("Access-Control-Allow-Origin", "*"); // CORS 허가증
+        // Set a CORS header to allow requests from any web origin.
+        res.set_header("Access-Control-Allow-Origin", "*");
 
-        // 요청 본문(body)에서 삭제할 파일 이름을 JSON 형태로 받습니다.
-        // 예: {"filename": "test.txt"}
         try {
+            // --- 1. Parse the request and get the filename ---
             auto json_body = nlohmann::json::parse(req.body);
             std::string utf8_filename = json_body["filename"];
 
-            // 한글 파일 처리를 위해 UTF-8 -> UTF-16 변환
+            // Convert to a wide string for Windows API compatibility.
             std::wstring wide_filename = utf8_to_wstring(utf8_filename);
-            std::wstring wide_filepath = L"C:\\PersonaRoot\\" + wide_filename;
 
-            // 보안 검사
-            if (wide_filename.find(L"..") != std::wstring::npos) {
-                throw std::runtime_error("Invalid filename");
+            // --- 2. Perform security check using the robust function ---
+            std::wstring safe_full_path;
+            if (!is_safe_path(wide_filename, safe_full_path)) {
+                // If the security check fails, throw an error.
+                throw std::runtime_error("Forbidden: Path is not safe.");
             }
 
-            // Windows API를 사용해 파일을 삭제합니다.
-            if (DeleteFileW(wide_filepath.c_str())) {
+            // --- 3. Delete the file ---
+            // Use the Windows API's DeleteFileW with the verified safe path.
+            if (DeleteFileW(safe_full_path.c_str())) {
+                // If deletion is successful, send a success status.
                 res.set_content("{\"status\": \"success\"}", "application/json");
             }
             else {
-                throw std::runtime_error("Failed to delete file");
+                // If the API call fails, throw an error.
+                throw std::runtime_error("Failed to delete file (it may not exist or be in use).");
             }
         }
         catch (const std::exception& e) {
-            res.status = 500; // 서버 내부 오류
+            // If any error occurs, send a proper error response.
+            // Use 403 for permission issues and 500 for others if you want to be more specific.
+            res.status = 500;
             res.set_content("{\"status\": \"error\", \"message\": \"" + std::string(e.what()) + "\"}", "application/json");
         }
         });
 
+    /**
+ * @brief Handles POST requests to update (overwrite) the content of an existing file.
+ */
     server.Post("/api/updatefile", [](const httplib::Request& req, httplib::Response& res) {
-        res.set_header("Access-Control-Allow-Origin", "*"); // CORS 허가증
+        // Set a CORS header to allow requests from any web origin.
+        res.set_header("Access-Control-Allow-Origin", "*");
 
         try {
-            // 요청 본문을 JSON으로 파싱합니다. 예: {"filename": "test.txt", "content": "hello world"}
+            // --- 1. Parse the incoming JSON request body ---
             auto json_body = nlohmann::json::parse(req.body);
             std::string utf8_filename = json_body["filename"];
             std::string content = json_body["content"];
 
-            // 한글 파일 처리를 위해 UTF-8 -> UTF-16 변환
+            // Convert to a wide string for Windows API compatibility.
             std::wstring wide_filename = utf8_to_wstring(utf8_filename);
-            std::wstring wide_filepath = L"C:\\PersonaRoot\\" + wide_filename;
 
-            // 보안 검사
-            if (wide_filename.find(L"..") != std::wstring::npos) {
-                throw std::runtime_error("Invalid filename");
+            // --- 2. Perform security check using the robust function ---
+            std::wstring safe_full_path;
+            if (!is_safe_path(wide_filename, safe_full_path)) {
+                // If the security check fails, throw an error.
+                throw std::runtime_error("Forbidden: Path is not safe.");
             }
 
-            // 파일을 쓰기 모드로 열고, 기존 내용을 덮어씁니다.
-            std::ofstream outfile(wide_filepath, std::ios::trunc); // std::ios::trunc 플래그가 덮어쓰기 모드입니다.
+            // --- 3. Overwrite the file ---
+            // Open the file at the verified safe path, truncating any existing content.
+            std::ofstream outfile(safe_full_path, std::ios::trunc);
             if (outfile.is_open()) {
                 outfile << content;
                 outfile.close();
+                // Send a success response.
                 res.set_content("{\"status\": \"success\"}", "application/json");
             }
             else {
+                // If the file couldn't be opened, throw an error.
                 throw std::runtime_error("Failed to open file for writing");
             }
         }
         catch (const std::exception& e) {
-            res.status = 500; // 서버 내부 오류
+            // If any error occurs, send a 500 Internal Server Error response.
+            res.status = 500;
             res.set_content("{\"status\": \"error\", \"message\": \"" + std::string(e.what()) + "\"}", "application/json");
         }
         });
 
+    /**
+ * @brief A catch-all GET handler to serve static files (e.g., HTML, JS, CSS).
+ *
+ * This handler is intentionally placed after all specific "/api/..." routes.
+ * It will catch any GET request that did not match a more specific route.
+ * Its purpose is to act as a simple static file server, allowing the browser
+ * to fetch the frontend assets needed to run the application.
+ *
+ * @param req The incoming HTTP request object. The requested path is captured by the regex.
+ * @param res The HTTP response object to be sent back to the client.
+ */
     server.Get(R"((/.*))", [&](const httplib::Request& req, httplib::Response& res) {
+        // req.matches[1] contains the full requested path (e.g., "/", "/explorer.js").
         std::string path = req.matches[1];
-        if (path == "/") path = "/index.html";
 
-        // substr(1)을 사용하여 맨 앞의 '/'를 제거합니다.
+        // If the root path "/" is requested, serve the main index.html file by convention.
+        if (path == "/") {
+            path = "/index.html";
+        }
+
+        // --- Construct the local filesystem path ---
+        // The web path starts with "/", which we need to remove before joining with the local path.
+        // std::filesystem::current_path() gets the server's working directory (e.g., "C:\...").
+        // The result is the absolute local path to the requested file.
         std::filesystem::path file_path = std::filesystem::current_path() / path.substr(1);
 
+        // --- Check if the file exists and serve it ---
+        // Verify that the path points to an existing, regular file (not a directory).
         if (std::filesystem::exists(file_path) && std::filesystem::is_regular_file(file_path)) {
+            // Open the file in binary mode.
             std::ifstream ifs(file_path, std::ios::binary);
-            std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-            res.set_content(content, get_mime_type(path).c_str());
+            if (ifs) {
+                // Read the entire file content into a string.
+                std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+                // Send the content as the response, setting the correct MIME type.
+                res.set_content(content, get_mime_type(path).c_str());
+            }
+            else {
+                // If the file exists but cannot be read, send a server error.
+                res.status = 500;
+                res.set_content("Cannot read file", "text/plain");
+            }
         }
         else {
+            // If the file does not exist at the constructed path, send a 404 Not Found error.
             res.status = 404;
             res.set_content("File not found", "text/plain");
         }
         });
 
+    /**
+ * @brief Handles POST requests to log error messages from the frontend.
+ *
+ * This endpoint provides a way for the JavaScript client to report errors
+ * to the server. The server then writes these errors, prefixed with a timestamp,
+ * to a local log file ("persona_error.log"). This is essential for debugging
+ * issues that occur on the user's end.
+ */
     server.Post("/api/log", [](const httplib::Request& req, httplib::Response& res) {
         try {
-            // 1. 현재 시간을 가져옵니다.
+            // --- 1. Get the current system time and format it as a string ---
             auto now = std::chrono::system_clock::now();
             auto in_time_t = std::chrono::system_clock::to_time_t(now);
             std::tm buf;
+            // Use the thread-safe localtime_s on Windows to get the local time.
             localtime_s(&buf, &in_time_t);
             std::stringstream ss;
+            // Format the time into a "YYYY-MM-DD HH:MM:SS" string.
             ss << std::put_time(&buf, "%Y-%m-%d %X");
 
-            // 2. 로그 파일(persona_error.log)을 추가 모드로 엽니다.
+            // --- 2. Open the log file in append mode ---
+            // std::ios::app ensures that new logs are added to the end of the file
+            // without overwriting existing content.
             std::ofstream log_file("persona_error.log", std::ios::app);
             if (log_file.is_open()) {
-                // 3. 로그 메시지를 형식에 맞게 작성합니다.
-                // 예: [2025-08-17 14:30:00] ERROR: 앱 초기화 실패: ...
+                // --- 3. Write the formatted log message ---
+                // The request body (req.body) contains the JSON-stringified error from the client.
+                // Example line: [2025-08-17 14:30:00] ERROR: {"message":"...","stack":"..."}
                 log_file << "[" << ss.str() << "] ERROR: " << req.body << std::endl;
                 log_file.close();
             }
 
+            // Send a simple confirmation response to the client.
             res.set_content("{\"status\": \"logged\"}", "application/json");
         }
         catch (const std::exception& e) {
+            // If an error occurs while trying to log, send a server error response.
             res.status = 500;
             res.set_content(e.what(), "text/plain");
         }
         });
 
-    CreateThread(NULL, 0, run_server, &server, 0, NULL);
+    // --- Launch the server in a separate thread ---
+    // Use the Windows API's CreateThread to run the 'run_server' function in the background.
+    // This is the most critical step, as it prevents the blocking svr->listen() call
+    // from freezing the main application that called this start_web_server function.
+    CreateThread(
+        NULL,         // Default security attributes.
+        0,            // Default stack size.
+        run_server,   // The function to execute in the new thread.
+        &server,      // The argument to pass to the thread function (a pointer to our server object).
+        0,            // Default creation flags (run immediately).
+        NULL          // We don't need to store the thread ID.
+    );
 
+    // This message is printed immediately after the thread is launched,
+    // confirming that the server initialization process has been kicked off.
     std::cout << "Web server is running..." << std::endl;
 
+    // Return 0 to indicate that the web server has been successfully launched.
+    // The main application can now continue its own execution.
     return 0;
 }
