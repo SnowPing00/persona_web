@@ -19,3 +19,23 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+WinFsp Code and License Exception
+
+This repository includes code from WinFsp (https://github.com/winfsp/winfsp).
+WinFsp is licensed under GPLv3 with the following exception:
+
+Windows File System Proxy Exception:
+
+Additional Exception
+
+As a special exception, you may use this file as part of a file system project,
+regardless of the license terms of this file system project, provided that you
+comply with the terms of the GNU General Public License version 3 as published
+by the Free Software Foundation (“GPLv3”) with respect to all the code used other
+than as part of this file system project. This exception does not (and cannot)
+grant you rights to use this file for any other purpose, and does not (and cannot)
+grant you rights to use this file as part of any other project other than a file
+system project. This exception terminates (and you may not use this file as part
+of a file system project) if you violate the terms of GPLv3 with respect to any
+other code used other than as part of this file system project.
