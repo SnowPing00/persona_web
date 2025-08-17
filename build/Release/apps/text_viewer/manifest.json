@@ -1,0 +1,10 @@
+{
+  "name": "텍스트 뷰어",
+  "entry_point": "viewer.js",
+  "handler_function": "renderTextViewer",
+  "description": "txt, log, cpp, js 등 일반 텍스트 파일을 봅니다.",
+  "readme": "readme.md",
+  "supported_extensions": [
+    "txt"
+  ]
+}

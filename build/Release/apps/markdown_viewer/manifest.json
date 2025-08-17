@@ -1,0 +1,11 @@
+{
+  "name": "마크다운 뷰어",
+  "entry_point": "viewer.js",
+  "handler_function": "renderMarkdownViewer",
+  "description": "MarkDown 파일을 봅니다.",
+  "readme": "readme.md",
+  "supported_extensions": [
+    "md",
+    "markdown"
+  ]
+}

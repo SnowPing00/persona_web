@@ -1,0 +1,12 @@
+{
+  "name": "비디오 플레이어",
+  "entry_point": "viewer.js",
+  "handler_function": "renderVideoViewer",
+  "description": "영상 파일을 봅니다.",
+  "readme": "readme.md",
+  "supported_extensions": [
+    "mp4",
+    "webm",
+    "ogv"
+  ]
+}
