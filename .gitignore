@@ -361,3 +361,19 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Compiled files and binaries
+*.exe
+*.pdb
+*.dll
+*.obj
+*.o
+*.lib
+*.ilk
+
+# Build directories
+/build/
+/Release/
+/Debug/
+/x64/
+/.vs/
