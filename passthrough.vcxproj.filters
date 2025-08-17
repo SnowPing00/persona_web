@@ -1,0 +1,48 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="passthrough.c">
+      <Filter>Source</Filter>
+    </ClCompile>
+    <ClCompile Include="server.cpp">
+      <Filter>Source</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="httplib.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+    <ClInclude Include="server.h">
+      <Filter>Source</Filter>
+    </ClInclude>
+    <ClInclude Include="nlohmann\json.hpp">
+      <Filter>Source</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="build\Release\index.html">
+      <Filter>Source</Filter>
+    </None>
+    <None Include="build\Release\explorer.js">
+      <Filter>Source</Filter>
+    </None>
+    <None Include="build\Release\lib\golden-layout\goldenlayout.min.js">
+      <Filter>Source</Filter>
+    </None>
+    <None Include="build\Release\lib\golden-layout\goldenlayout-base.css">
+      <Filter>Source</Filter>
+    </None>
+    <None Include="build\Release\lib\golden-layout\goldenlayout-dark-theme.css">
+      <Filter>Source</Filter>
+    </None>
+    <None Include="build\Release\lib\golden-layout\goldenlayout-light-theme.css">
+      <Filter>Source</Filter>
+    </None>
+  </ItemGroup>
+</Project>
