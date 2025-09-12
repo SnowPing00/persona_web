@@ -180,6 +180,56 @@ bool is_safe_path(const std::wstring& requested_filename, std::wstring& out_full
 }
 
 /**
+ * @brief Acts as a security checkpoint for static file serving to prevent directory traversal.
+ *
+ * This function is similar to is_safe_path but uses the server's current working
+ * directory as the safe root. It ensures that requests for static assets
+ * (like JS, CSS, HTML) cannot access files outside the intended web root directory.
+ *
+ * @param requested_path_str The raw path string from the web request.
+ * @param out_full_path An output parameter that will be filled with the safe,
+ * canonical path if the check is successful.
+ * @return true if the path is safe and within the web root, false otherwise.
+ */
+bool is_safe_static_path(const std::string& requested_path_str, std::wstring& out_full_path) {
+    // 1. Get the web server's root directory (current working directory).
+    wchar_t current_dir_buffer[MAX_PATH];
+    if (GetCurrentDirectoryW(MAX_PATH, current_dir_buffer) == 0) {
+        return false; // Failed to get current directory
+    }
+    std::wstring web_root = current_dir_buffer;
+
+    // 2. Combine the web root with the requested path.
+    // The requested path is UTF-8, convert it to wide string.
+    std::wstring requested_path_wide = utf8_to_wstring(requested_path_str);
+
+    // Remove leading slash if it exists, as we are combining with an absolute path.
+    if (!requested_path_wide.empty() && (requested_path_wide[0] == L'/' || requested_path_wide[0] == L'\\')) {
+        requested_path_wide = requested_path_wide.substr(1);
+    }
+
+    std::wstring combined_path = web_root + L"\\" + requested_path_wide;
+
+    // 3. Use the Windows API to resolve the path into its canonical, absolute form.
+    wchar_t final_path_buffer[MAX_PATH];
+    if (GetFullPathNameW(combined_path.c_str(), MAX_PATH, final_path_buffer, NULL) == 0) {
+        return false; // Path resolution failed, treat as unsafe.
+    }
+
+    // 4. Check if the fully resolved path starts with the web root directory prefix.
+    // Ensure web_root has a trailing slash for a robust prefix comparison.
+    if (web_root.back() != L'\\') {
+        web_root += L'\\';
+    }
+    if (wcsncmp(final_path_buffer, web_root.c_str(), web_root.length()) != 0) {
+        return false; // The path has escaped the web root, block it.
+    }
+
+    out_full_path = final_path_buffer;
+    return true;
+}
+
+/**
  * @brief Determines the MIME type of a file based on its extension.
  *
  * This helper function is used to set the correct `Content-Type` HTTP header
@@ -283,7 +333,7 @@ extern "C" int start_web_server() {
         catch (const std::exception& e) {
             // If any unexpected error occurs, send a 500 Internal Server Error response.
             res.status = 500;
-            res.set_content(e.what(), "text/plain");
+            res.set_content("An unexpected error occurred.", "text/plain");
         }
         });
 
@@ -524,7 +574,7 @@ extern "C" int start_web_server() {
             // If any error occurs (JSON parsing, security check, file I/O),
             // send a 500 Internal Server Error response with the error message.
             res.status = 500;
-            res.set_content("{\"status\": \"error\", \"message\": \"" + std::string(e.what()) + "\"}", "application/json");
+            res.set_content("{\"status\": \"error\", \"message\": \"An internal error occurred.\"}", "application/json");
         }
         });
 
@@ -565,7 +615,7 @@ extern "C" int start_web_server() {
             // If any error occurs, send a proper error response.
             // Use 403 for permission issues and 500 for others if you want to be more specific.
             res.status = 500;
-            res.set_content("{\"status\": \"error\", \"message\": \"" + std::string(e.what()) + "\"}", "application/json");
+            res.set_content("{\"status\": \"error\", \"message\": \"An internal error occurred.\"}", "application/json");
         }
         });
 
@@ -609,7 +659,7 @@ extern "C" int start_web_server() {
         catch (const std::exception& e) {
             // If any error occurs, send a 500 Internal Server Error response.
             res.status = 500;
-            res.set_content("{\"status\": \"error\", \"message\": \"" + std::string(e.what()) + "\"}", "application/json");
+            res.set_content("{\"status\": \"error\", \"message\": \"An internal error occurred.\"}", "application/json");
         }
         });
 
@@ -633,17 +683,18 @@ extern "C" int start_web_server() {
             path = "/index.html";
         }
 
-        // --- Construct the local filesystem path ---
-        // The web path starts with "/", which we need to remove before joining with the local path.
-        // std::filesystem::current_path() gets the server's working directory (e.g., "C:\...").
-        // The result is the absolute local path to the requested file.
-        std::filesystem::path file_path = std::filesystem::current_path() / path.substr(1);
+        // --- SECURITY CHECK for static files ---
+        std::wstring safe_file_path_w;
+        if (!is_safe_static_path(path, safe_file_path_w)) {
+            res.status = 403;
+            res.set_content("Forbidden: Path is not safe.", "text/plain");
+            return;
+        }
 
-        // --- Check if the file exists and serve it ---
-        // Verify that the path points to an existing, regular file (not a directory).
-        if (std::filesystem::exists(file_path) && std::filesystem::is_regular_file(file_path)) {
+        // --- Check if the file exists and serve it using the safe path ---
+        if (std::filesystem::exists(safe_file_path_w) && std::filesystem::is_regular_file(safe_file_path_w)) {
             // Open the file in binary mode.
-            std::ifstream ifs(file_path, std::ios::binary);
+            std::ifstream ifs(safe_file_path_w, std::ios::binary);
             if (ifs) {
                 // Read the entire file content into a string.
                 std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -701,7 +752,7 @@ extern "C" int start_web_server() {
         catch (const std::exception& e) {
             // If an error occurs while trying to log, send a server error response.
             res.status = 500;
-            res.set_content(e.what(), "text/plain");
+            res.set_content("An internal error occurred while logging.", "text/plain");
         }
         });
 
