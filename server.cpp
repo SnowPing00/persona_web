@@ -142,17 +142,22 @@ std::wstring utf8_to_wstring(const std::string& str)
 }
 
 /**
- * @brief Acts as a security checkpoint to prevent directory traversal attacks.
+ * @brief Acts as a security checkpoint for virtual drive access, preventing directory traversal attacks.
  *
- * This function takes a filename provided by a user, combines it with the virtual
- * drive's root path (C:\PersonaRoot\), and verifies that the final, fully-resolved
- * path is still safely within that root directory. This is crucial for preventing
- * users from accessing unauthorized files using relative paths like "../../Windows/System32/".
+ * This function is a critical security measure. It takes a user-supplied filename,
+ * combines it with the hardcoded virtual drive root (C:\PersonaRoot\), and then
+ * canonicalizes the path using the Windows API. The key is that `GetFullPathNameW`
+ * resolves any ".." or "." components, producing a clean, absolute path.
  *
- * @param requested_filename The filename or relative path from the user's request.
- * @param out_full_path An output parameter that will be filled with the safe,
- * canonical path if the check is successful.
- * @return true if the path is safe and within C:\PersonaRoot\, false otherwise.
+ * The function then performs a final string comparison to ensure this resolved path
+ * still resides within the intended sandboxed directory. This prevents attackers from
+ * crafting malicious paths (e.g., "..\\..\\..\\Windows\\System32\\cmd.exe") to
+ * read or write files outside the virtual drive.
+ *
+ * @param requested_filename The filename or relative path from the user's request (in wide string format).
+ * @param out_full_path An output parameter that, on success, will contain the safe,
+ * canonicalized absolute path.
+ * @return true if the path is safe and within C:\PersonaRoot\; false otherwise.
  */
 bool is_safe_path(const std::wstring& requested_filename, std::wstring& out_full_path)
 {
@@ -180,51 +185,67 @@ bool is_safe_path(const std::wstring& requested_filename, std::wstring& out_full
 }
 
 /**
- * @brief Acts as a security checkpoint for static file serving to prevent directory traversal.
+ * @brief Acts as a security checkpoint for static file serving, preventing directory traversal attacks.
  *
- * This function is similar to is_safe_path but uses the server's current working
- * directory as the safe root. It ensures that requests for static assets
- * (like JS, CSS, HTML) cannot access files outside the intended web root directory.
+ * This function mirrors the logic of `is_safe_path` but is tailored for serving
+ * static assets (HTML, JS, CSS) from the application's working directory (the web root).
+ * It prevents attackers from requesting files outside this directory, such as
+ * `http://localhost:1234/../../sensitive_file.txt`.
  *
- * @param requested_path_str The raw path string from the web request.
- * @param out_full_path An output parameter that will be filled with the safe,
- * canonical path if the check is successful.
- * @return true if the path is safe and within the web root, false otherwise.
+ * The process is:
+ * 1. Get the server's current working directory, which acts as the safe "web root".
+ * 2. Combine this root with the user's requested file path.
+ * 3. Canonicalize the combined path using `GetFullPathNameW` to resolve all relative parts like "..".
+ * 4. Verify that the resulting absolute path still starts with the web root path.
+ *
+ * @param requested_path_str The raw, UTF-8 encoded path string from the web request (e.g., "/index.html").
+ * @param out_full_path An output parameter that, on success, will contain the safe,
+ * canonicalized absolute path as a wide string.
+ * @return true if the path is safe and within the web root; false otherwise.
  */
 bool is_safe_static_path(const std::string& requested_path_str, std::wstring& out_full_path) {
-    // 1. Get the web server's root directory (current working directory).
+    // 1. Get the web server's root directory (the directory from which the executable is running).
     wchar_t current_dir_buffer[MAX_PATH];
     if (GetCurrentDirectoryW(MAX_PATH, current_dir_buffer) == 0) {
-        return false; // Failed to get current directory
+        // If we can't get the current directory, we cannot perform a safe check.
+        return false;
     }
     std::wstring web_root = current_dir_buffer;
 
     // 2. Combine the web root with the requested path.
-    // The requested path is UTF-8, convert it to wide string.
+    // The requested path is UTF-8 from the web, so it must be converted to a wide string for Windows API calls.
     std::wstring requested_path_wide = utf8_to_wstring(requested_path_str);
 
-    // Remove leading slash if it exists, as we are combining with an absolute path.
+    // Sanitize the path: remove any leading slashes. `GetCurrentDirectoryW` does not end with a slash,
+    // so we build the path like "C:\my\path" + "\" + "js/app.js". A leading slash in the request
+    // like "/js/app.js" would result in "C:\my\path" + "\" + "/js/app.js", which is invalid on some systems.
     if (!requested_path_wide.empty() && (requested_path_wide[0] == L'/' || requested_path_wide[0] == L'\\')) {
         requested_path_wide = requested_path_wide.substr(1);
     }
 
     std::wstring combined_path = web_root + L"\\" + requested_path_wide;
 
-    // 3. Use the Windows API to resolve the path into its canonical, absolute form.
+    // 3. Use the Windows API's GetFullPathNameW to resolve the path. This is the core of the
+    // security check, as it correctly processes ".." and "." segments. For example,
+    // "C:\my\path\..\other" becomes "C:\my\other".
     wchar_t final_path_buffer[MAX_PATH];
     if (GetFullPathNameW(combined_path.c_str(), MAX_PATH, final_path_buffer, NULL) == 0) {
-        return false; // Path resolution failed, treat as unsafe.
+        // A failure here indicates an invalid path format, which should be treated as unsafe.
+        return false;
     }
 
-    // 4. Check if the fully resolved path starts with the web root directory prefix.
-    // Ensure web_root has a trailing slash for a robust prefix comparison.
+    // 4. Final check: ensure the canonical path is still prefixed by the web root.
+    // This confirms that the path resolution did not "escape" the intended directory.
+    // We must ensure the web_root has a trailing slash for a correct prefix comparison.
     if (web_root.back() != L'\\') {
         web_root += L'\\';
     }
     if (wcsncmp(final_path_buffer, web_root.c_str(), web_root.length()) != 0) {
-        return false; // The path has escaped the web root, block it.
+        // If the prefixes don't match, it's a directory traversal attempt. Block it.
+        return false;
     }
 
+    // If all checks pass, the path is safe. Return it via the output parameter.
     out_full_path = final_path_buffer;
     return true;
 }
@@ -331,7 +352,9 @@ extern "C" int start_web_server() {
 
         }
         catch (const std::exception& e) {
-            // If any unexpected error occurs, send a 500 Internal Server Error response.
+            // For security, log the detailed error server-side for debugging...
+            std::cerr << "Error in /api/resources: " << e.what() << std::endl;
+            // ...but send a generic error message to the client to avoid leaking internal details.
             res.status = 500;
             res.set_content("An unexpected error occurred.", "text/plain");
         }
@@ -571,8 +594,9 @@ extern "C" int start_web_server() {
             }
         }
         catch (const std::exception& e) {
-            // If any error occurs (JSON parsing, security check, file I/O),
-            // send a 500 Internal Server Error response with the error message.
+            // For security, log the detailed error server-side for debugging...
+            std::cerr << "Error in /api/writefile: " << e.what() << std::endl;
+            // ...but send a generic error message to the client.
             res.status = 500;
             res.set_content("{\"status\": \"error\", \"message\": \"An internal error occurred.\"}", "application/json");
         }
@@ -612,8 +636,9 @@ extern "C" int start_web_server() {
             }
         }
         catch (const std::exception& e) {
-            // If any error occurs, send a proper error response.
-            // Use 403 for permission issues and 500 for others if you want to be more specific.
+            // For security, log the detailed error server-side for debugging...
+            std::cerr << "Error in /api/deletefile: " << e.what() << std::endl;
+            // ...but send a generic error message to the client.
             res.status = 500;
             res.set_content("{\"status\": \"error\", \"message\": \"An internal error occurred.\"}", "application/json");
         }
@@ -657,7 +682,9 @@ extern "C" int start_web_server() {
             }
         }
         catch (const std::exception& e) {
-            // If any error occurs, send a 500 Internal Server Error response.
+            // For security, log the detailed error server-side for debugging...
+            std::cerr << "Error in /api/updatefile: " << e.what() << std::endl;
+            // ...but send a generic error message to the client.
             res.status = 500;
             res.set_content("{\"status\": \"error\", \"message\": \"An internal error occurred.\"}", "application/json");
         }
@@ -684,6 +711,8 @@ extern "C" int start_web_server() {
         }
 
         // --- SECURITY CHECK for static files ---
+        // Before serving any file, validate the requested path to prevent directory traversal attacks.
+        // `is_safe_static_path` ensures the final, canonical path is within our web root directory.
         std::wstring safe_file_path_w;
         if (!is_safe_static_path(path, safe_file_path_w)) {
             res.status = 403;
@@ -750,7 +779,9 @@ extern "C" int start_web_server() {
             res.set_content("{\"status\": \"logged\"}", "application/json");
         }
         catch (const std::exception& e) {
-            // If an error occurs while trying to log, send a server error response.
+            // This is a last-resort catch block. If logging itself fails,
+            // we can't do much other than report a server error.
+            // We avoid printing to cerr here to prevent a potential infinite loop if cerr itself is the issue.
             res.status = 500;
             res.set_content("An internal error occurred while logging.", "text/plain");
         }
